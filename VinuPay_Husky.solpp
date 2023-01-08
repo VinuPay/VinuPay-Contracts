@@ -1,0 +1,278 @@
+// SPDX-License-Identifier: UNLICENSED
+// VinuPay Smart Contract version "Husky"
+pragma soliditypp >=0.8.0;
+
+
+import "./Strings.sol";
+import "./RoleControl.sol";
+contract VitePay is RoleControl { 
+        // Configuration
+        address private constant NAME_MANAGER_ADDRESS = address("vite_3ff69bdb42c311333d2c560697ff476724bf894fbe9c942388");
+        address private constant TREASURY_OWNER_ADDRESS = address("vite_3ff69bdb42c311333d2c560697ff476724bf894fbe9c942388");
+        vitetoken public constant CONTRACT_TOKEN = vitetoken("tti_5649544520544f4b454e6e40");
+        uint256 public constant BASE_NAME_FEE = 1 vite; // Base fee for names with length > 4
+        uint16 public constant SHORT_NAME_MULTIPLIER = 2; // Fee for 4 char names (baseNameFee is multiplied by this value)
+        uint16 public constant VERY_SHORT_NAME_MULTIPLIER = 3; // Fee for 3 char names (baseNameFee is multiplied by this value)
+        // Roles and etc.
+        bytes32 public constant NAME_MANAGER = keccak256("NAME_MANAGER");
+        bytes32 public constant TREASURY_OWNER = keccak256("TREASURY_OWNER");
+        uint256 public treasuryBalance;
+        // Public so can be used easily for stats
+        uint48 private nameNo; 
+        uint56 private transactionNo;
+
+
+        event NewInvoice(string txId, address merchantAddress);
+        event TreasuryWithdrawal(address to, uint256 amount);
+        event InvoicePaid(string txId, address merchantAddress, address payerAddress, uint256 amount);
+        event NameTransferred(uint48 nameId, address oldOwnerAddress, address newOwnerAddress);
+        
+        // Transaction Structure
+        struct Transaction { 
+            address payable destination;
+            uint256 amount;       
+            uint48 nameId;
+            uint48 expireBlock;
+            vitetoken txToken;
+            uint8 status;       
+        }
+        mapping (string => Transaction) private transactions;
+        
+        // Merchant Structure
+        struct Name {
+            address ownerAddress;
+            string name;
+            bool isTrusted;
+            uint48 nameId;
+        }
+        mapping (uint48 => Name) private namesById; // Mapped by nameId, main part.
+        mapping (address => uint48[]) private namesByAddress;
+        mapping (string => uint48) private names;
+        
+        constructor() {
+            _setupRole(TREASURY_OWNER, TREASURY_OWNER_ADDRESS);
+            _setupRole(NAME_MANAGER, NAME_MANAGER_ADDRESS);
+        }
+
+        receive() external payable { revert(); }
+        
+        /**
+        * @dev Fallback, pay invoice, memo as txID
+        */
+        fallback() external payable {
+            string memory txMemo = string(msg.data);
+            Transaction memory t = transactions[txMemo];
+            require(t.destination != address(0x0), "No transaction found!");
+            // Transaction exists
+            require(t.txToken == msg.token, "Token doesn't match!");
+            require(t.amount == msg.value, "Amount is not equal!");
+            require(t.expireBlock > block.number, "Transaction Expired");
+            require(t.status == 0, "Transaction status must be 0!");
+
+            transactions[txMemo].status = 1;
+            emit InvoicePaid(txMemo, t.destination, msg.sender, msg.value);
+            t.destination.transfer(msg.token, msg.value);
+        }
+
+        /**
+        * @dev Mint a new name
+        * @param name Selected name
+        */
+        function mintName(string memory name) public payable {
+            require(_checkName(name), "Name doesn't match the requirements!");
+            uint256 fee = _getCreationFee(name);
+            require(namesById[names[name]].ownerAddress == address(0x0), "Name is taken!");
+            require(msg.token == CONTRACT_TOKEN, "Token doesn't match!");
+            require(msg.value == fee, "Name creation fee not paid/incorrect amount.");
+            nameNo++;
+            // Store References
+            namesByAddress[msg.sender].push(nameNo);
+            names[name] = nameNo;
+            // Store Name
+            namesById[nameNo] = Name(msg.sender,name,false,nameNo);
+            // Transfer fee to treasury
+            treasuryBalance += msg.value;
+        }
+
+        /**
+        * @dev Create a new transaction
+        * @param destination Destination address
+        * @param amount Amount of the transaction
+        * @param txToken Token of the transaction
+        * @param nameId Name ID
+        */
+        function createInvoice(address payable destination, uint256 amount, vitetoken txToken, uint48 nameId, uint24 expireBlocks) public {
+            require(destination != address(0x0), "Destination address is invalid!");
+            require(destination != address(this), "Destination address cannot be this contract!");
+            Name memory n = namesById[nameId];
+            require(n.ownerAddress == msg.sender, "This name doesn't exist or you don't own it!");
+            require(expireBlocks <= 604800, "Expire blocks must be less than 7 days!");
+            require(amount > 0, "Amount must be higher than 0!");
+            transactionNo++;
+            string memory txId = Strings.toString(transactionNo);
+            transactions[txId] = Transaction(destination,amount,nameId,uint48(block.number + expireBlocks), txToken,0);
+            emit NewInvoice(txId,n.ownerAddress);
+        }
+
+        /**
+        * @dev Function to add or remove trust status to the name.
+        * Function with restricted access to name manager only
+        */
+        function changeNameTrustStatus(uint48 nameId, bool shouldTrust) public onlyRole(NAME_MANAGER) {
+            Name memory n = namesById[nameId];
+            require(n.ownerAddress != address(0x0), "Merchant reference not found!");
+            namesById[nameId].isTrusted = shouldTrust;
+        }
+        
+        /**
+        * @dev Function to transfer name ownership.
+        * @param nameId ID of the names to be transferred
+        * @param newOwner Address of the new owner
+        */
+        function transferName(uint48 nameId, address newOwner, uint48 indexOnArray) public {
+            require(newOwner != address(this), "Destination address cannot be this contract!");
+            Name memory n = namesById[nameId];
+            require(n.ownerAddress == msg.sender, "You are not the owner of this name or this name doesn't exist!!");
+            require(namesByAddress[msg.sender][indexOnArray] == nameId, "Index doesn't match!");
+            // Update merchants
+            namesById[n.nameId].ownerAddress = newOwner;
+            // Update merchantsByAddress
+            namesByAddress[newOwner].push(n.nameId);
+            _deleteFromArray(namesByAddress[msg.sender], indexOnArray);
+            emit NameTransferred(nameId, msg.sender, newOwner);
+        }
+    
+        /**
+        * @dev Function to transfer treasury balance.
+        * Function with restricted access to treasuryOwner only
+        * @param amount Amount to be transferred
+        * @param destination Destination address
+        */
+        function withdrawFromTreasury(uint256 amount, address payable destination) public onlyRole(TREASURY_OWNER) {
+            treasuryBalance = balance(CONTRACT_TOKEN);
+            require(amount <= treasuryBalance, "Amount is higher than treasury balance!");
+            require(destination != address(0x0), "Destination address is invalid!");
+            require(destination != address(this), "Destination address cannot be this contract!");
+            destination.transfer(CONTRACT_TOKEN, amount);
+            emit TreasuryWithdrawal(destination, amount);
+        }
+
+        // Views
+        
+        /**
+        * @dev Check transaction status, also used to fetch transaction details
+        * @param txId Transaction ID
+        * @return Transaction details
+        */
+        function getTransaction(string memory txId) public view returns(Transaction memory) {
+            return transactions[txId];
+        }
+
+        /**
+        * @dev Get total registered names count
+        * @return Number of names registered
+        */
+        function getNameCount() public view returns(uint56) {
+            return nameNo;
+        }
+
+        /**
+        * @dev Get transaction count
+        * @return Number of transactions
+        */
+        function getTransactionCount() public view returns(uint56) {
+            return transactionNo;
+        }
+        
+        /**
+        * @dev Get all name address owns.
+        * @param nameHolderAddress Address of the name
+        * @return mIds Array of name IDs
+        */
+        function getNamesByAddress(address nameHolderAddress) public view returns(uint48[] memory) {
+           return namesByAddress[nameHolderAddress];
+        }
+
+        /**
+        * @dev Get name
+        * @param name Name
+        * @return n Name struct
+        */
+        function getName(string memory name) public view returns(Name memory) {
+            Name memory n = namesById[names[name]];
+            // Get name from ref
+            if (_isManagerRenounced()) {
+                n.isTrusted = false;
+            }
+            return n;
+        }
+
+        /**
+        * @dev Get name by ID
+        * @param nameId Name ID
+        * @return n Name object
+        */
+        function getNameById(uint48 nameId) public view returns(Name memory) {
+            Name memory n = namesById[nameId];
+            if (_isManagerRenounced()) {
+                n.isTrusted = false;
+            }
+            return n;
+
+        }
+
+        // Internals
+
+        /**
+        * @dev Internal Function to check whether NAME_MANAGER was renounced
+        * @return bool True if NAME_MANAGER is renounced
+        */
+        function _isManagerRenounced() internal view returns(bool) {
+            return _isRoleRenounced(NAME_MANAGER);
+        }
+
+        /**
+        * @dev Internal function to check name creation fee according to its length
+        * @param name Name
+        * @return uint256 Fee to be paid
+        */
+        function _getCreationFee(string memory name) internal pure returns (uint256) {
+            uint8 nameLength = uint8(bytes(name).length);
+            if (nameLength == 3) {
+                return BASE_NAME_FEE * VERY_SHORT_NAME_MULTIPLIER;
+            } else if (nameLength == 4) {
+                return BASE_NAME_FEE * SHORT_NAME_MULTIPLIER;
+            } else {
+                return BASE_NAME_FEE;
+            }
+        }
+        /**
+        * @dev Internal Function to check if name is valid and can be registered.
+        * @param name Name
+        * @return bool True if name is valid
+        */
+        function _checkName(string memory name) public pure returns (bool) {
+
+            bytes memory byteString = bytes(name);
+            if (byteString.length <= 24 && byteString.length >= 3) {
+                for(uint i = 0; i < byteString.length; i++) {
+                    if (!((byteString[i] >= 0x61 && byteString[i] <= 0x7A) || (byteString[i] >= 0x30 && byteString[i] <= 0x39))) {
+                        return false;
+                    }
+            }
+                return true;
+            } else {
+                return false;
+            }
+        }
+        
+        /**
+        * @dev Internal Function to delete an element from an array, s̶t̶o̶l̶e̶n̶ borrowed from KaffinPX (with permission of course!) 
+        * @param array Array to delete from
+        * @param index Index of the element to be deleted
+        */
+        function _deleteFromArray(uint48[] storage array, uint index) internal {
+            array[index] = array[array.length - 1];
+            array.pop();
+        }
+}
