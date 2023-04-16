@@ -153,7 +153,10 @@ contract VitePay is RoleControl {
             require(amount <= treasuryBalance, "Amount is higher than treasury balance!");
             require(destination != address(0x0), "Destination address is invalid!");
             require(destination != address(this), "Destination address cannot be this contract!");
-            destination.transfer(CONTRACT_TOKEN, amount);
+            uint256 burnAmount = amount / 2;
+            uint256 withdrawAmount = amount - burnAmount;
+            payable(0x0).transfer(CONTRACT_TOKEN, burnAmount);
+            destination.transfer(CONTRACT_TOKEN, withdrawAmount);
             emit TreasuryWithdrawal(destination, amount);
         }
 
