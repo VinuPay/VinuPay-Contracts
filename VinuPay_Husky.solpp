@@ -7,10 +7,10 @@ import "./Strings.sol";
 import "./RoleControl.sol";
 contract VitePay is RoleControl { 
         // Configuration
-        address private constant NAME_MANAGER_ADDRESS = address("vite_3ff69bdb42c311333d2c560697ff476724bf894fbe9c942388");
-        address private constant TREASURY_OWNER_ADDRESS = address("vite_3ff69bdb42c311333d2c560697ff476724bf894fbe9c942388");
-        vitetoken public constant CONTRACT_TOKEN = vitetoken("tti_5649544520544f4b454e6e40");
-        uint256 public constant BASE_NAME_FEE = 1 vite; // Base fee for names with length > 4
+        address private constant NAME_MANAGER_ADDRESS = address("vite_23c6be45392335da7f6dc1f02795e6a1c841f8727d7ae914fb");
+        address private constant TREASURY_OWNER_ADDRESS = address("vite_23c6be45392335da7f6dc1f02795e6a1c841f8727d7ae914fb");
+        vitetoken public constant CONTRACT_TOKEN = vitetoken("tti_541b25bd5e5db35166864096"); // Yes it's VINU
+        uint256 public constant BASE_NAME_FEE = 500000000 vite; // Base fee for names with length > 4 (500m)
         uint16 public constant SHORT_NAME_MULTIPLIER = 2; // Fee for 4 char names (baseNameFee is multiplied by this value)
         uint16 public constant VERY_SHORT_NAME_MULTIPLIER = 3; // Fee for 3 char names (baseNameFee is multiplied by this value)
         // Roles and etc.
